@@ -1,0 +1,58 @@
+name: Docker events collector image
+on:
+  pull_request:
+    paths:
+      - "**"
+      - ".github/workflows/docker-events-image.yml"
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - "**"
+      - ".github/workflows/docker-events-image.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: docker-events-image-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v6
+        with:
+          go-version: "1.27"
+          check-latest: true
+          cache: false
+      - name: Test and vet
+        working-directory: .
+        run: |
+          go test -race ./...
+          go vet ./...
+  image:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-qemu-action@68827325e0b33c7199eb31dd4e31fbe9023e06e3 # v3.6.0
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ghcr.io/pintjesb/docker-events-collector:main
+          provenance: mode=max
+          sbom: true
