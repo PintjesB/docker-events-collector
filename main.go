@@ -96,8 +96,8 @@ func poll(ctx context.Context,client *http.Client,endpoint,out,host string,mark 
  return io.EOF
 }
 func run(ctx context.Context)error{
- endpoint:=os.Getenv("DOCKER_EVENTS_URL");if endpoint==""{endpoint="http://docker-socket:2375/v1.41/events"}
- u,err:=url.Parse(endpoint);if err!=nil||u.Scheme!="http"||u.Host!="docker-socket:2375"||u.Path!="/v1.41/events"{return errors.New("DOCKER_EVENTS_URL must use the dedicated docker-socket:2375 events endpoint")}
+ endpoint:=os.Getenv("DOCKER_EVENTS_URL");if endpoint==""{endpoint="http://docker-socket:2375/events"}
+ u,err:=url.Parse(endpoint);if err!=nil||u.Scheme!="http"||u.Host!="docker-socket:2375"||u.Path!="/events"{return errors.New("DOCKER_EVENTS_URL must use the dedicated docker-socket:2375 events endpoint")}
  out:=os.Getenv("VECTOR_ADDR");if out==""{return errors.New("VECTOR_ADDR is required")}
  if _,_,err=net.SplitHostPort(out);err!=nil{return fmt.Errorf("invalid VECTOR_ADDR: %w",err)}
  host:=os.Getenv("EVENT_HOST");if host==""{host="tower"}
