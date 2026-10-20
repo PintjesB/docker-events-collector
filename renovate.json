@@ -22,8 +22,9 @@
   "pinDigests": true,
   "packageRules": [
     {
-      "description": "Automerge tested patch, pin and digest updates",
+      "description": "Automerge tested non-major, pin and digest updates",
       "matchUpdateTypes": [
+        "minor",
         "patch",
         "pin",
         "pinDigest",
@@ -91,5 +92,20 @@
   "prConcurrentLimit": 3,
   "branchConcurrentLimit": 3,
   "internalChecksAsSuccess": false,
-  "internalChecksFilter": "strict"
+  "internalChecksFilter": "strict",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track digest-pinned actionlint image in workflow validation",
+      "managerFilePatterns": [
+        "/^\\.github\\/workflows\\/workflow-lint\\.yml$/"
+      ],
+      "matchStrings": [
+        "ACTIONLINT_IMAGE: \"rhysd/actionlint:(?<currentValue>[^@\\\"]+)@(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ],
+      "depNameTemplate": "rhysd/actionlint",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    }
+  ]
 }
