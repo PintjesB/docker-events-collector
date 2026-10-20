@@ -8,7 +8,7 @@ on:
 
 concurrency:
   group: docker-events-image-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -74,7 +74,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Create immutable SemVer release tag if necessary
+      - name: Resolve SemVer release and prevent republishing existing versions
         id: release
         shell: bash
         env:
@@ -89,8 +89,6 @@ jobs:
               echo "Release ${tag} already exists; bump VERSION for another release." >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/tags/${tag}" -f sha="${GITHUB_SHA}" >/dev/null
           elif [[ "$GITHUB_REF" != "refs/tags/${tag}" ]]; then
             echo "::error::Only Git tags matching VERSION may publish"
             exit 1
@@ -123,6 +121,16 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           provenance: mode=max
           sbom: true
+      - name: Create immutable Git release tag after successful image publication
+        if: steps.release.outputs.publish == 'true' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/v${RELEASE_VERSION}" -f sha="${GITHUB_SHA}" >/dev/null
       - name: Report published image and digest
         if: steps.release.outputs.publish == 'true'
         env:
