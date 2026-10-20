@@ -49,26 +49,51 @@ func connect(ctx context.Context,addr string)(net.Conn,error){
 func send(ctx context.Context,addr,payload string)error{
  c,err:=connect(ctx,addr);if err!=nil{return err};defer c.Close()
  if err=c.SetWriteDeadline(time.Now().Add(5*time.Second));err!=nil{return err}
- _,err=io.WriteString(c,payload);return err
+ n,err:=io.WriteString(c,payload);if err==nil&&n!=len(payload){return io.ErrShortWrite};return err
 }
-func poll(ctx context.Context,client *http.Client,endpoint,out,host string,since *int64)error{
+// The cursor is volatile and is never a forensic checkpoint. Docker's
+// 'since' parameter is inclusive at second resolution.
+type cursor struct {
+ nano int64
+ key string
+}
+func eventNano(e event) int64 {
+ if e.TimeNano>0{return e.TimeNano}
+ return e.Time*int64(time.Second)
+}
+func eventKey(e event)string{return e.Type+"\x00"+e.Action+"\x00"+e.Actor.ID}
+func (c *cursor) already(e event)bool{
+ n:=eventNano(e)
+ return n<c.nano || n==c.nano && eventKey(e)==c.key
+}
+func (c *cursor) mark(e event){
+ c.nano=eventNano(e)
+ c.key=eventKey(e)
+}
+func poll(ctx context.Context,client *http.Client,endpoint,out,host string,mark *cursor)error{
  u,err:=url.Parse(endpoint);if err!=nil{return err}
- // Streaming query also restricts server-side event production.
- q:=u.Query();q.Set("since",strconv.FormatInt(*since,10));q.Set("filters",`{"type":["container"]}`);u.RawQuery=q.Encode()
+ q:=u.Query()
+ q.Set("since",strconv.FormatInt(mark.nano/int64(time.Second),10))
+ q.Set("filters","{\"type\":[\"container\"]}")
+ u.RawQuery=q.Encode()
  req,err:=http.NewRequestWithContext(ctx,http.MethodGet,u.String(),nil);if err!=nil{return err}
  resp,err:=client.Do(req);if err!=nil{return err};defer resp.Body.Close()
  if resp.StatusCode!=http.StatusOK{return fmt.Errorf("Docker events HTTP %d",resp.StatusCode)}
- dec:=json.NewDecoder(io.LimitReader(resp.Body,1<<62))
- for{
+ scan:=bufio.NewScanner(resp.Body)
+ scan.Buffer(make([]byte,16*1024),128*1024)
+ for scan.Scan(){
   var ev event
-  if err:=dec.Decode(&ev);err!=nil{return err}
-  if !allowedTypes[ev.Type]||!allowedActions[ev.Action] {continue}
-  if ev.Time<=0 {continue}
+  if err:=json.Unmarshal(scan.Bytes(),&ev);err!=nil {
+   log.Print("invalid Docker event JSON ignored")
+   continue
+  }
+  if !allowedTypes[ev.Type]||!allowedActions[ev.Action]||ev.Time<=0||mark.already(ev){continue}
   line:=format(ev,host)
   if err=send(ctx,out,line);err!=nil{return fmt.Errorf("Vector delivery failed: %w",err)}
-  // Inclusive 'since' permits duplicates after reconnection, but avoids knowingly skipping events.
-  if ev.Time>*since{*since=ev.Time}
+  mark.mark(ev)
  }
+ if err:=scan.Err();err!=nil{return fmt.Errorf("Docker event stream failed: %w",err)}
+ return io.EOF
 }
 func run(ctx context.Context)error{
  endpoint:=os.Getenv("DOCKER_EVENTS_URL");if endpoint==""{endpoint="http://docker-socket:2375/v1.41/events"}
@@ -76,13 +101,13 @@ func run(ctx context.Context)error{
  out:=os.Getenv("VECTOR_ADDR");if out==""{return errors.New("VECTOR_ADDR is required")}
  if _,_,err=net.SplitHostPort(out);err!=nil{return fmt.Errorf("invalid VECTOR_ADDR: %w",err)}
  host:=os.Getenv("EVENT_HOST");if host==""{host="tower"}
- transport:=&http.Transport{Proxy:nil,DialContext:(&net.Dialer{Timeout:5*time.Second,KeepAlive:30*time.Second}).DialContext,MaxIdleConns:1,IdleConnTimeout:30*time.Second}
+ transport:=&http.Transport{Proxy:nil,DialContext:(&net.Dialer{Timeout:5*time.Second,KeepAlive:30*time.Second}).DialContext,MaxIdleConns:1,IdleConnTimeout:30*time.Second,ResponseHeaderTimeout:10*time.Second,DisableCompression:true}
  defer transport.CloseIdleConnections()
  client:=&http.Client{Transport:transport}
- since:=time.Now().Add(-5*time.Second).Unix()
+ mark:=cursor{nano:time.Now().Add(-2*time.Second).UnixNano()}
  backoff:=time.Second
  for ctx.Err()==nil {
-  err=poll(ctx,client,endpoint,out,host,&since)
+  err=poll(ctx,client,endpoint,out,host,&mark)
   if ctx.Err()!=nil {break}
   log.Printf("event stream disconnected (%v); reconnecting",err)
   select{case <-time.After(backoff):case <-ctx.Done():return nil}
