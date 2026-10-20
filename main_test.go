@@ -6,6 +6,7 @@ import (
  "encoding/json"
  "fmt"
  "io"
+ "os"
  "net"
  "net/http"
  "net/http/httptest"
@@ -87,4 +88,28 @@ func TestOversizedEventIsRejected(t *testing.T){
  mark:=cursor{nano:time.Now().UnixNano()}
  err:=poll(context.Background(),api.Client(),api.URL,"127.0.0.1:1","tower",&mark)
  if err==nil||!strings.Contains(err.Error(),"Docker event stream failed"){t.Fatalf("expected bounded scanner error: %v",err)}
+}
+
+func TestDockerEndpointValidation(t *testing.T) {
+ original, wasSet := os.LookupEnv("DOCKER_EVENTS_URL")
+ defer func(){ if wasSet { _=os.Setenv("DOCKER_EVENTS_URL",original) } else { _=os.Unsetenv("DOCKER_EVENTS_URL") } }()
+ cases:=[]struct{url string;accepted bool}{
+  {"http://docker-socket:2375/events",true},
+  {"http://docker-socket:2375/v1.41/events",false},
+  {"http://evil-host:2375/events",false},
+  {"https://docker-socket:2375/events",false},
+  {"http://docker-socket:2375/containers/json",false},
+ }
+ // Verify the URL policy without opening network connections: invalid
+ // inputs must be rejected by run before any dial occurs.
+ for _,tc:=range cases {
+  if tc.accepted {continue}
+  t.Run(tc.url,func(t *testing.T){
+   t.Setenv("DOCKER_EVENTS_URL",tc.url)
+   t.Setenv("VECTOR_ADDR","127.0.0.1:1")
+   ctx,cancel:=context.WithTimeout(context.Background(),50*time.Millisecond); defer cancel()
+   err:=run(ctx)
+   if err==nil||!strings.Contains(err.Error(),"DOCKER_EVENTS_URL"){t.Fatalf("unsafe Docker URL accepted: %q, err=%v",tc.url,err)}
+  })
+ }
 }
