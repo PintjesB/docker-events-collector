@@ -1,9 +1,6 @@
 name: Docker events collector image
 on:
   pull_request:
-    paths:
-      - "**"
-      - ".github/workflows/docker-events-image.yml"
   push:
     branches: [main]
     tags: ['v*']
@@ -13,7 +10,6 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-  packages: write
 concurrency:
   group: docker-events-image-${{ github.ref }}
   cancel-in-progress: true
@@ -34,6 +30,9 @@ jobs:
           go test -race ./...
           go vet ./...
   image:
+    permissions:
+      contents: read
+      packages: write
     needs: test
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -47,12 +46,22 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Select image tag
+        id: image_tag
+        env:
+          SOURCE_REF: ${{ github.ref }}
+        run: |
+          if [[ "$SOURCE_REF" == refs/tags/v* ]]; then
+            echo "tag=ghcr.io/pintjesb/docker-events-collector:${SOURCE_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=ghcr.io/pintjesb/docker-events-collector:main" >> "$GITHUB_OUTPUT"
+          fi
       - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: .
           file: ./Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ghcr.io/pintjesb/docker-events-collector:main
+          tags: ${{ steps.image_tag.outputs.tag }}
           provenance: mode=max
           sbom: true
