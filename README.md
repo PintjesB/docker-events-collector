@@ -1,40 +1,41 @@
 # Docker Events Collector
 
-Minimal Go Docker container-event collector. Forwards sanitized lifecycle events to the existing Vector TCP syslog listener, with Wazuh detection handled centrally.
+Minimal Go Docker container-event collector forwarding sanitized lifecycle events to the existing Vector TCP syslog listener for Wazuh detection.
 
-The runtime image is based on `scratch`, contains a statically compiled Go binary, runs as UID 65532, and has no package manager or shell. It never mounts Docker's host socket; a dedicated proxy is supplied by the private Compose stack.
+The image uses a static Go binary in `scratch`, runs as UID 65532, has no shell or package manager, and never mounts Docker's host socket. The separate private Compose repository contains a restricted Docker API proxy.
 
-## Versioned releases
+## Automatic SemVer releases
 
-- `VERSION` is the source of truth for the stable SemVer version, starting at `0.1.0`.
-- Every PR must pass Go tests, race detection, vet and multi-architecture image build without publishing.
-- When a version bump is merged to `main`, the workflow creates Git tag `vX.Y.Z` and publishes GHCR image `ghcr.io/pintjesb/docker-events-collector:X.Y.Z` with AMD64/ARM64 manifests, SBOM and provenance.
-- A manually pushed `vX.Y.Z` Git tag can also publish, but only when its version matches `VERSION`.
-- Commits that do not bump `VERSION` skip image publication. No `:main` or `:latest` tag is published.
-- GitHub Actions uses scoped `GITHUB_TOKEN` permissions rather than a PAT. Git tags created by Actions do not trigger separate workflows, so tagging and publishing happen in the same job.
-- Verify GHCR anonymous pull permissions after the first publication. The consuming Compose stack should pin the image digest and let Renovate update it.
+**No manual version file or Git tag updates.** Existing Git tags are the only source of truth for published image versions.
+
+- PRs run Go race tests, vet, SemVer release algorithm tests, and AMD64/ARM64 builds without publishing.
+- Each successful merge/push to `main` computes the next stable version since the highest Git tag `vX.Y.Z`.
+- Conventional commit `feat:` or `feat(scope):` increments the **minor** version; `type!:` or a `BREAKING CHANGE:` footer increments **major**; all other merges, including Renovate `chore(deps):`, increment **patch**.
+- CI publishes `ghcr.io/pintjesb/docker-events-collector:X.Y.Z` for AMD64/ARM64 with SBOM and provenance, then creates `vX.Y.Z` after publication succeeds.
+- Publication is serialized across runs. Older runs that were superseded by a later release are skipped. A commit that already has a release is not republished.
+- No `:main` or `:latest` image. The consuming private Compose stack uses a SemVer tag with an immutable digest updated by Renovate.
+
+Even documentation-only merges generate a patch release; use `feat` and `!` only for actual feature and breaking changes. Squash merge titles should follow Conventional Commits to classify versions correctly.
 
 ## Renovate
 
-`renovate.json` is the configuration for the Renovate GitHub App. Matches the established homelab conventions: European timezone, vulnerability alerts, labels, patch/pin/digest automerge after CI, manual publishing Actions and Go compiler major/minor changes, and strict configuration validation.
+Repository-specific `renovate.json` uses the existing homelab conventions: Europe/Brussels timezone, vulnerability labels, CI-gated non-major dependency automerge, manual review for permission-sensitive GitHub Actions, and Go compiler major/minor approval.
 
 ## Configuration
 
-| Variable | Required | Purpose |
+| Variable | Required | Description |
 | --- | --- | --- |
-| `VECTOR_ADDR` | Yes | Existing Vector TCP syslog listener `host:port`. Never Wazuh secure-agent port. |
-| `EVENT_HOST` | No | Defaults to `tower`. |
-
-Use the separate private `PintjesB/docker-compose/docker-events-tower` Compose stack for socket-proxy confinement and outbound networking.
+| `VECTOR_ADDR` | Yes | Vector TCP syslog listener as `host:port`. Do not use the Wazuh agent port. |
+| `EVENT_HOST` | No | Syslog hostname, defaults to `tower`. |
 
 ## Limitations
 
-Best-effort event capture. Docker's replay buffer and lack of persistent state can cause event gaps or duplicates. Successful TCP writes do not prove Vector persistence or Wazuh ingestion. The collector does not forward raw Docker labels, command strings or environment variables.
+This is best-effort monitoring, not forensic capture. Prolonged Docker/Vector outages can cause gaps or duplicates, and TCP writes do not prove Wazuh ingestion.
 
-## Local checks
+## Local validation
 
 ```sh
 go test -race -count=1 ./...
 go vet ./...
-CGO_ENABLED=0 go build -trimpath -o /tmp/docker-events-collector .
+python3 -m unittest discover -s tests -v
 ```
