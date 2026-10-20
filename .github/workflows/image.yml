@@ -1,17 +1,21 @@
-name: Docker events collector image
+name: Docker events collector CI and SemVer releases
+
 on:
   pull_request:
   push:
     branches: [main]
-    tags: ['v*']
-  workflow_dispatch:
-permissions:
-  contents: read
+    tags: ["v*"]
+
 concurrency:
   group: docker-events-image-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
 jobs:
   test:
+    name: Go tests and release version check
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -20,15 +24,25 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v6
         with:
-          go-version: "1.27"
-          check-latest: true
+          go-version-file: go.mod
           cache: false
-      - name: Test and vet
-        working-directory: .
+      - name: Validate stable SemVer
+        shell: bash
         run: |
-          go test -race ./...
-          go vet ./...
+          set -euo pipefail
+          version="$(cat VERSION)"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::VERSION must be stable SemVer X.Y.Z"; exit 1; }
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF" != "refs/tags/v${version}" ]]; then
+            echo "::error::Git release tag must match VERSION exactly"
+            exit 1
+          fi
+      - name: Unit and integration tests
+        run: go test -race -count=1 ./...
+      - name: Vet
+        run: go vet ./...
+
   build-pr:
+    name: Verify AMD64 and ARM64 images
     if: github.event_name == 'pull_request'
     needs: test
     runs-on: ubuntu-latest
@@ -39,54 +53,87 @@ jobs:
           persist-credentials: false
       - uses: docker/setup-qemu-action@68827325e0b33c7199eb31dd4e31fbe9023e06e3 # v3.6.0
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
-      - name: Verify AMD64 and ARM64 scratch image builds without publishing
+      - name: Build without publishing
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: .
           file: ./Dockerfile
-          push: false
           platforms: linux/amd64,linux/arm64
-  image:
-    permissions:
-      contents: read
-      packages: write
+          push: false
+
+  publish:
+    name: Publish versioned GHCR image
     needs: test
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Resolve SemVer release and prevent republishing existing versions
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(cat VERSION)"
+          tag="v${version}"
+          if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              echo "Release ${tag} already exists; bump VERSION for another release." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          elif [[ "$GITHUB_REF" != "refs/tags/${tag}" ]]; then
+            echo "::error::Only Git tags matching VERSION may publish"
+            exit 1
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@68827325e0b33c7199eb31dd4e31fbe9023e06e3 # v3.6.0
+        if: steps.release.outputs.publish == 'true'
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        if: steps.release.outputs.publish == 'true'
       - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        if: steps.release.outputs.publish == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Select image tag
-        id: image_tag
-        env:
-          SOURCE_REF: ${{ github.ref }}
-        run: |
-          if [[ "$SOURCE_REF" == refs/tags/v* ]]; then
-            echo "tag=ghcr.io/pintjesb/docker-events-collector:${SOURCE_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=ghcr.io/pintjesb/docker-events-collector:main" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
-        id: build
+      - name: Publish SemVer multi-architecture image
+        if: steps.release.outputs.publish == 'true'
+        id: image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: .
           file: ./Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.image_tag.outputs.tag }}
+          tags: ghcr.io/pintjesb/docker-events-collector:${{ steps.release.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/PintjesB/docker-events-collector
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
           provenance: mode=max
           sbom: true
-      - name: Published image digest
+      - name: Create immutable Git release tag after successful image publication
+        if: steps.release.outputs.publish == 'true' && github.ref == 'refs/heads/main'
+        shell: bash
         env:
-          IMAGE_TAG: ${{ steps.image_tag.outputs.tag }}
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-        run: echo "Published ${IMAGE_TAG}@${IMAGE_DIGEST}" >> "$GITHUB_STEP_SUMMARY"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/v${RELEASE_VERSION}" -f sha="${GITHUB_SHA}" >/dev/null
+      - name: Report published image and digest
+        if: steps.release.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: echo "Published ghcr.io/pintjesb/docker-events-collector:${VERSION}@${DIGEST}" >> "$GITHUB_STEP_SUMMARY"

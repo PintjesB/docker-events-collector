@@ -2,27 +2,110 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended",
+    ":enableVulnerabilityAlertsWithLabel('security')",
+    ":preserveSemverRanges",
+    ":rebaseStalePrs",
     "helpers:pinGitHubActionDigests"
   ],
   "timezone": "Europe/Brussels",
+  "labels": [
+    "renovate"
+  ],
+  "stopUpdatingLabel": "renovate/stop_updating",
+  "automerge": false,
+  "automergeSchedule": [
+    "* 3-4 * * *"
+  ],
+  "automergeType": "pr",
+  "platformAutomerge": false,
+  "ignoreTests": false,
   "pinDigests": true,
   "packageRules": [
     {
+      "description": "Automerge tested non-major, pin and digest updates",
       "matchUpdateTypes": [
         "minor",
         "patch",
+        "pin",
         "pinDigest",
         "digest"
       ],
       "automerge": true
     },
     {
+      "description": "Require approval for coupled Go compiler minor/major changes",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "golang"
+      ],
       "matchUpdateTypes": [
+        "minor",
         "major"
       ],
+      "dependencyDashboardApproval": true,
       "automerge": false
+    },
+    {
+      "description": "Keep publishing and permission-sensitive GitHub Actions manual",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "automerge": false
+    },
+    {
+      "description": "Go builder patches and digests are validated by multi-arch CI",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "golang"
+      ],
+      "matchUpdateTypes": [
+        "patch",
+        "pin",
+        "pinDigest",
+        "digest"
+      ],
+      "automerge": true
+    },
+    {
+      "description": "Label automerge PRs",
+      "matchJsonata": [
+        "automerge = true"
+      ],
+      "addLabels": [
+        "auto merge"
+      ]
+    },
+    {
+      "description": "Label manual merge PRs",
+      "matchJsonata": [
+        "automerge = false"
+      ],
+      "addLabels": [
+        "manual merge"
+      ]
     }
   ],
-  "automergeType": "pr",
-  "platformAutomerge": false
+  "prConcurrentLimit": 3,
+  "branchConcurrentLimit": 3,
+  "internalChecksAsSuccess": false,
+  "internalChecksFilter": "strict",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track digest-pinned actionlint image in workflow validation",
+      "managerFilePatterns": [
+        "/^\\.github\\/workflows\\/workflow-lint\\.yml$/"
+      ],
+      "matchStrings": [
+        "ACTIONLINT_IMAGE: \"rhysd/actionlint:(?<currentValue>[^@\\\"]+)@(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ],
+      "depNameTemplate": "rhysd/actionlint",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    }
+  ]
 }
