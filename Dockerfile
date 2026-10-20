@@ -1,6 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG GO_VERSION=1.27.3
-FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS build
 WORKDIR /src
 COPY go.mod *.go ./
 ARG TARGETOS TARGETARCH
