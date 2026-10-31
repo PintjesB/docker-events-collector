@@ -2,6 +2,24 @@
 
 Minimal Go Docker container-event collector forwarding sanitized lifecycle events to the existing Vector TCP syslog listener for Wazuh detection.
 
+## Privacy-preserving command-execution telemetry
+
+The Docker Events API exposes exec actions with full command arguments. Commands can
+contain passwords, tokens or other private data. The collector processes the raw
+action only in memory and emits *fixed, allowlisted* fields instead:
+
+- `action=exec_start`
+- `exec_class`: `shell_direct`, `shell_command`, `privileged_tool`,
+  `docker_socket_access`, `network_tool`, `docker_cli` or `other`
+- `exec_tool`: a fixed list of known executable basenames or `other`
+
+No raw command, command arguments, environment variables, Docker labels or unknown
+binary paths are forwarded. `exec_create` and `exec_die` remain excluded.
+High-volume shell `-c` healthchecks can be kept below Wazuh alert thresholds,
+while direct shells and high-risk tools can be alerted using Tower-specific
+rules. Detection is heuristic: this is not process-level audit or attribution.
+Do not copy Docker exec arguments to logs or Wazuh as a fallback.
+
 The image uses a static Go binary in `scratch`, runs as UID 65532, has no shell or package manager, and never mounts Docker's host socket. The separate private Compose repository contains a restricted Docker API proxy.
 
 ## Automatic SemVer releases
