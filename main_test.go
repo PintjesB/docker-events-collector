@@ -113,3 +113,37 @@ func TestDockerEndpointValidation(t *testing.T) {
   })
  }
 }
+
+func TestExecTelemetryNeverForwardsArguments(t *testing.T) {
+ cases:=[]struct{action,kind,tool string}{
+  {"exec_start: /bin/sh","shell_direct","sh"},
+  {"exec_start: /bin/bash -c echo SUPER_SECRET_TOKEN","shell_command","bash"},
+  {"exec_start: /usr/bin/nsenter --target 1 --mount","privileged_tool","nsenter"},
+  {"exec_start: curl --unix-socket /var/run/docker.sock http://localhost/containers/json","docker_socket_access","curl"},
+  {"exec_start: /usr/bin/curl https://example.test","network_tool","curl"},
+  {"exec_start: docker ps","docker_cli","docker"},
+  {"exec_start: /bin/true --password=SUPER_SECRET_TOKEN","other","other"},
+  {"exec_start: /weird/SUPER_SECRET_TOKEN --user=root","other","other"},
+ }
+ for _,tc:=range cases{
+  kind,tool:=classifyExec(tc.action)
+  if kind!=tc.kind||tool!=tc.tool {t.Fatalf("%q: got %s/%s",tc.action,kind,tool)}
+  ev:=event{Type:"container",Action:tc.action,Time:time.Now().Unix()}
+  ev.Actor.ID="012345"
+  ev.Actor.Attributes=map[string]string{"name":"test-container"}
+  logline:=format(ev,"tower")
+  if strings.Contains(logline,"SUPER_SECRET_TOKEN")||strings.Contains(logline,"--unix-socket")||
+     strings.Contains(logline,"http://localhost/containers/json")||strings.Contains(logline,"--target")||
+     strings.Contains(logline,"example.test")||strings.Contains(logline,"-c echo") {
+   t.Fatalf("sensitive exec arguments leaked: %q",logline)
+  }
+  if !strings.Contains(logline,"\"action\":\"exec_start\"")||
+     !strings.Contains(logline,"\"exec_class\":\""+tc.kind+"\"")||
+     !strings.Contains(logline,"\"exec_tool\":\""+tc.tool+"\"") {
+   t.Fatalf("missing sanitized telemetry: %q",logline)
+  }
+ }
+ if kind,tool:=classifyExec("exec_create: /bin/sh -c SECRET");kind!=""||tool!="" {
+  t.Fatal("exec_create should not be forwarded")
+ }
+}
