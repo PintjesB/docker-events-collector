@@ -34,11 +34,50 @@ func safe(s string,max int)string{
  for _,r:=range s {if (r>='a'&&r<='z')||(r>='A'&&r<='Z')||(r>='0'&&r<='9')||strings.ContainsRune("._:/@- ",r){b.WriteRune(r)}else{b.WriteByte('_')}}
  return b.String()
 }
+// classifyExec exports only fixed classifications. Raw arguments can contain
+// secrets, and must never be forwarded to Vector, Wazuh or application logs.
+func classifyExec(action string) (string,string) {
+ if !strings.HasPrefix(action,"exec_start:"){return "",""}
+ fields:=strings.Fields(strings.TrimPrefix(action,"exec_start:"))
+ if len(fields)==0{return "other","other"}
+ name:=fields[0]
+ if i:=strings.LastIndexByte(name,'/');i>=0{name=name[i+1:]}
+ switch name {
+ case "sh","bash","ash","dash","zsh","fish":
+  for _,flag:=range fields[1:] {
+   if !strings.HasPrefix(flag,"-"){break}
+   if flag=="--command" || (len(flag)>1 && !strings.HasPrefix(flag,"--") && strings.ContainsRune(flag[1:],'c')) {
+    return "shell_command",name
+   }
+  }
+  return "shell_direct",name
+ case "nsenter","unshare","setpriv","capsh","mount","modprobe","insmod","chroot":
+  return "privileged_tool",name
+ case "curl":
+  if strings.Contains(action,"--unix-socket") &&
+    (strings.Contains(action,"/var/run/docker.sock") || strings.Contains(action,"/run/docker.sock")) {
+   return "docker_socket_access",name
+  }
+  return "network_tool",name
+ case "wget","nc","ncat","socat":
+  return "network_tool",name
+ case "docker":
+  return "docker_cli",name
+ default:
+  return "other","other"
+ }
+}
+
 func format(e event,host string)string{
  a:=e.Actor.Attributes
  ts:=time.Unix(e.Time,0).UTC()
  if e.TimeNano>0 {ts=time.Unix(0,e.TimeNano).UTC()}
  message:=map[string]any{"source":"docker-events","host":host,"type":e.Type,"action":e.Action,"id":safe(e.Actor.ID,64),"name":safe(a["name"],128),"image":safe(a["image"],256),"project":safe(a["com.docker.compose.project"],128),"exit_code":safe(a["exitCode"],8),"time":ts.Format(time.RFC3339Nano)}
+ if class,tool:=classifyExec(e.Action);class!="" {
+  message["action"]="exec_start"
+  message["exec_class"]=class
+  message["exec_tool"]=tool
+ }
  raw,_:=json.Marshal(message)
  return fmt.Sprintf("<134>1 %s %s docker-events - - - %s\n",ts.Format(time.RFC3339Nano),safe(host,64),raw)
 }
@@ -87,7 +126,7 @@ func poll(ctx context.Context,client *http.Client,endpoint,out,host string,mark 
    log.Print("invalid Docker event JSON ignored")
    continue
   }
-  if !allowedTypes[ev.Type]||!allowedActions[ev.Action]||ev.Time<=0||mark.already(ev){continue}
+  if !allowedTypes[ev.Type]||(!allowedActions[ev.Action] && !strings.HasPrefix(ev.Action,"exec_start:"))||ev.Time<=0||mark.already(ev){continue}
   line:=format(ev,host)
   if err=send(ctx,out,line);err!=nil{return fmt.Errorf("Vector delivery failed: %w",err)}
   mark.mark(ev)
