@@ -23,7 +23,24 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "lts/*"
+          node-version: "24"
           package-manager-cache: false
       - name: Strict Renovate configuration validation
         run: npx --yes --package renovate -- renovate-config-validator --strict
+      - name: Verify autonomous update guardrails
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const c = JSON.parse(fs.readFileSync('renovate.json', 'utf8'));
+          assert.equal(c.timezone, 'Europe/Brussels');
+          assert.deepEqual(c.automergeSchedule, ['* 3-4 * * *']);
+          assert.equal(c.prHourlyLimit, 6);
+          assert.equal(c.prConcurrentLimit, 12);
+          assert.equal(c.branchConcurrentLimit, 16);
+          assert.equal(c.platformAutomerge, false);
+          assert.equal(c.ignoreTests, false);
+          assert.equal(c.automergeType, 'pr');
+          assert.ok(c.packageRules.some(r => r.dependencyDashboardApproval === true && r.automerge === false));
+          NODE
