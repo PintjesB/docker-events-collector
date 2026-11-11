@@ -8,6 +8,8 @@
     "helpers:pinGitHubActionDigests"
   ],
   "timezone": "Europe/Brussels",
+  "automergeSchedule": [],
+  "rebaseWhen": "automerging",
   "prHourlyLimit": 0,
   "prConcurrentLimit": 0,
   "branchConcurrentLimit": 0,
@@ -16,9 +18,6 @@
   ],
   "stopUpdatingLabel": "renovate/stop_updating",
   "automerge": false,
-  "automergeSchedule": [
-    "* 3-4 * * *"
-  ],
   "automergeType": "pr",
   "platformAutomerge": false,
   "ignoreTests": false,
